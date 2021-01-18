@@ -2,6 +2,8 @@ import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 
+import scala.collection.mutable.ArrayBuffer
+
 object Main {
   def main(args: Array[String]): Unit = {
 
@@ -39,7 +41,9 @@ object Main {
     val varianceBar: Array[Double] = Array.fill(K)(rddVariance)
     val phiBar: Array[Double] = Array.fill(K)(1.0/K)
     var lnpX = logLikelihood(X, phiBar, sample, varianceBar)
+    var gammaTest = gamma(X, phiBar, sample, varianceBar)
     println("lnP(X) function: " + lnpX)
+    println("gamma function: " + gammaTest.mkString("Array(", ", ", ")"))
     //println("phiBar function: " + phiBar.mkString("Array(", ", ", ")"))
   }
 
@@ -78,6 +82,46 @@ object Main {
         Our values represented as Double. We replaced it from Float, to have better precision, however it does not solve
         the issue with non-negative values.
      */
+  }
+
+  def gamma(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Array[Double] = {
+
+    // We store our results for each n here. Array buffer is stored since it is mutable data structure.
+    var arr: ArrayBuffer[Double] = ArrayBuffer()
+
+    /*
+      Note: First of all, we decided to calculate denominator of expression.
+     */
+    val denominator: Double = X.map(elem => {
+      var rightSideSum: Double = 0.0
+
+      for(k <- sample.indices) {
+        val mean = sample(k)
+        val variance = varianceBar(k)
+        val covariance = Math.sqrt(variance)
+
+        val formula = PhiBar(k) * (1 / covariance * Math.sqrt(2 * Math.PI)
+          * Math.exp(-(Math.pow(elem - mean, 2) / 2 * variance)))
+        rightSideSum = rightSideSum + formula
+      }
+      rightSideSum
+    }).filter(value => value != Double.NegativeInfinity)
+      .reduce((fst, snd) => fst + snd)
+
+    // for each datapoint calculate likelihood
+    X.collect().foreach(datapoint => {
+      for(k <- sample.indices) {
+        val mean = sample(k)
+        val variance = varianceBar(k)
+        val covariance = Math.sqrt(variance)
+
+        val numerator = PhiBar(k) * (1 / covariance * Math.sqrt(2 * Math.PI)
+          * Math.exp(-(Math.pow(datapoint - mean, 2) / 2 * variance)))
+
+        arr += (numerator / denominator)
+      }
+    })
+    arr.toArray
   }
 
   def mean(X: RDD[Double]): Double = {
