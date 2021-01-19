@@ -5,6 +5,10 @@ import org.apache.spark.sql.SparkSession
 import scala.collection.mutable.ArrayBuffer
 
 object Main {
+  var sample: Array[Double] = _
+  var varianceBar: Array[Double] = _
+  var phiBar: Array[Double] = _
+
   def main(args: Array[String]): Unit = {
 
     println("Hello, world!")
@@ -25,26 +29,44 @@ object Main {
 
     println("Sample values: " + sampleFunction(ds, 5).mkString("Array(", ", ", ")"))
 
-    EM(ds, 3)
+    val em = EM(ds,3)
+    println("EM: " + em._1.mkString("Array(", ", ", ")") + " | " + em._2.mkString("Array(", ", ", ")")
+      + " | " + em._3.mkString("Array(", ", ", ")"))
 
   }
 
   type GMM = (Array[Double], Array[Double], Array[Double])
 
-  def EM(X: RDD[Double], K: Int): Unit = {
+  def EM(X: RDD[Double], K: Int): GMM = {
     // Initialization Step
-    //val sampling: Array[Float] = sample(X, K)
+    val xCount = X.count()
 
-    val sample: Array[Double] = sampleFunction(X, K)
     val rddMean: Double = mean(X)
     val rddVariance: Double = variance(X, rddMean)
-    val varianceBar: Array[Double] = Array.fill(K)(rddVariance)
-    val phiBar: Array[Double] = Array.fill(K)(1.0/K)
-    var lnpX = logLikelihood(X, phiBar, sample, varianceBar)
-    var gammaTest = gamma(X, phiBar, sample, varianceBar)
-    println("lnP(X) function: " + lnpX)
-    println("gamma function: " + gammaTest.mkString("Array(", ", ", ")"))
-    //println("phiBar function: " + phiBar.mkString("Array(", ", ", ")"))
+
+    sample = sampleFunction(X, K)
+    varianceBar = Array.fill(K)(rddVariance)
+    phiBar = Array.fill(K)(1.0/K)
+    var lnpX: Double = logLikelihood(X, phiBar, sample, varianceBar)
+    var lnpXcopy: Double = lnpX
+
+    do {
+      // Expectation Step
+      val gm: Array[GammaValue] = gamma(X, phiBar, sample, varianceBar)
+
+      // Maximization Step
+      for (k <- 0 until K) {
+        updateWeight(gm, k, xCount.toInt)
+        updateMean(gm, X, k, dataPointsNumber = xCount.toInt)
+        updateVariance(gm, k)
+      }
+
+      lnpXcopy = lnpX
+      lnpX = logLikelihood(X, phiBar, sample, varianceBar)
+
+    } while((lnpX - lnpXcopy) > 0.5)
+
+    (phiBar, sample, varianceBar)
   }
 
   def sampleFunction(X: RDD[Double], K: Int): Array[Double] = {
@@ -84,10 +106,11 @@ object Main {
      */
   }
 
-  def gamma(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Array[Double] = {
+  // for each n we have k
+  def gamma(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Array[GammaValue] = {
 
     // We store our results for each n here. Array buffer is stored since it is mutable data structure.
-    var arr: ArrayBuffer[Double] = ArrayBuffer()
+    var arr: ArrayBuffer[GammaValue] = ArrayBuffer()
 
     /*
       Note: First of all, we decided to calculate denominator of expression.
@@ -109,6 +132,8 @@ object Main {
       .reduce((fst, snd) => fst + snd)
 
     // for each datapoint calculate likelihood
+    // We have to collect data from RDD into our system, otherwise we cannot populate array which
+    // is outside our foreach branch.
     X.collect().foreach(datapoint => {
       for(k <- sample.indices) {
         val mean = sample(k)
@@ -118,7 +143,8 @@ object Main {
         val numerator = PhiBar(k) * (1 / covariance * Math.sqrt(2 * Math.PI)
           * Math.exp(-(Math.pow(datapoint - mean, 2) / 2 * variance)))
 
-        arr += (numerator / denominator)
+        val gammaObj = new GammaValue(datapoint, k, numerator / denominator)
+        arr += gammaObj
       }
     })
     arr.toArray
@@ -138,7 +164,21 @@ object Main {
       .reduce((fst, snd) => fst + snd) / datasetSize)
   }
 
-  /* def EM(X: RDD[Float], K: Int): GMM = {
-    return()
-  } */
+  def updateWeight(gamma: Array[GammaValue], k: Int, dataPointsNumber: Int): Unit = {
+    phiBar(k) = gamma.filter(el => el.k == k).map(el => el.value / dataPointsNumber).sum
+  }
+
+  def updateMean(gamma: Array[GammaValue], X: RDD[Double], k: Int, dataPointsNumber: Int): Double = {
+    val denominator = gamma.filter(el => el.k == k).map(el => el.value).sum
+    val num = gamma.filter(el => el.k == k).map(el => el.value * el.n).sum
+
+    sample(k) = num / denominator
+    num / denominator
+  }
+
+  def updateVariance(gamma: Array[GammaValue], k: Int): Unit = {
+    val denominator = gamma.filter(el => el.k == k).map(el => el.value).sum
+    val num = gamma.filter(el => el.k == k).map(el => el.value * Math.pow(el.n - sample(k), 2)).sum
+    varianceBar(k) = num / denominator
+  }
 }
