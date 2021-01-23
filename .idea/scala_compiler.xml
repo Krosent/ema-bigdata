@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ScalaCompilerConfiguration">
-    <profile name="sbt 1" modules="BigDataProject,bigdataproject" />
+    <profile name="sbt 1" modules="BigDataProject,app,app.BigDataProject,bigdataproject" />
   </component>
 </project>

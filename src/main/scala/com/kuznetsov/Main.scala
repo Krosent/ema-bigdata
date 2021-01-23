@@ -1,37 +1,65 @@
-import org.apache.spark.SparkConf
+package com.kuznetsov
+
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{SparkSession}
 
 import scala.collection.mutable.ArrayBuffer
 
-object Main {
+object Mn {
+  def main(args: Array[String]): Unit = {
+    val main = new Main()
+    main.main(null)
+  }
+}
+
+class Main extends App {
+
   var sample: Array[Double] = _
   var varianceBar: Array[Double] = _
   var phiBar: Array[Double] = _
 
-  def main(args: Array[String]): Unit = {
+  var sc: SparkContext = _
+  var spark: SparkSession = _
 
-    println("Hello, world!")
+  var xCount = 0
+
+  override def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf()
     conf.setAppName("0561433")
+    // remove this line
     conf.setMaster("local[2]")
-    val session = SparkSession.builder().config(conf).getOrCreate()
-    import session.implicits._
 
-    val ds: RDD[Double] = session.read.textFile("dataset-sample.txt").map(el => el.toDouble).rdd.persist()
+    spark = SparkSession
+      .builder()
+      .config(conf)
+      .getOrCreate()
 
-    println("Pop mean: " + mean(ds))
+    sc = spark.sparkContext
 
-    println("Pop variance: " + variance(ds, mean(ds)))
 
-    println("num of lines: " + ds.count())
+    // On testing machine
+    //val ds: RDD[Double] = sc.textFile("/data/bigDataSecret/dataset-PUT_SET_SIZE.txt", 4)
+      // .map(el => el.toDouble).persist()
 
-    println("Sample values: " + sampleFunction(ds, 5).mkString("Array(", ", ", ")"))
 
-    val em = EM(ds,3)
-    println("EM: " + em._1.mkString("Array(", ", ", ")") + " | " + em._2.mkString("Array(", ", ", ")")
-      + " | " + em._3.mkString("Array(", ", ", ")"))
+    for(a <- 1 until 10) {
+      // Locally
+      val ds: RDD[Double] = sc.textFile("dataset-mini.txt")
+        .map(el => el.toDouble).persist()
+
+      val startTimeMillis = System.currentTimeMillis()
+
+      val em = EM(ds, 3)
+      println("EM: " + em._1.mkString("Array(", ", ", ")") + " | " + em._2.mkString("Array(", ", ", ")")
+        + " | " + em._3.mkString("Array(", ", ", ")"))
+
+      val endTimeMillis = System.currentTimeMillis()
+      val durationSeconds = (endTimeMillis - startTimeMillis) / 1000
+
+      println("Execution time: " + durationSeconds)
+    }
 
   }
 
@@ -39,7 +67,7 @@ object Main {
 
   def EM(X: RDD[Double], K: Int): GMM = {
     // Initialization Step
-    val xCount = X.count()
+    xCount = X.count().toInt
 
     val rddMean: Double = mean(X)
     val rddVariance: Double = variance(X, rddMean)
@@ -48,7 +76,7 @@ object Main {
     varianceBar = Array.fill(K)(rddVariance)
     phiBar = Array.fill(K)(1.0/K)
     var lnpX: Double = logLikelihood(X, phiBar, sample, varianceBar)
-    var lnpXcopy: Double = lnpX
+    var lnpCopy: Double = lnpX
 
     do {
       // Expectation Step
@@ -57,14 +85,15 @@ object Main {
       // Maximization Step
       for (k <- 0 until K) {
         updateWeight(gm, k, xCount.toInt)
-        updateMean(gm, X, k, dataPointsNumber = xCount.toInt)
+        updateMean(gm, k, dataPointsNumber = xCount.toInt)
         updateVariance(gm, k)
       }
 
-      lnpXcopy = lnpX
+      lnpCopy = lnpX
       lnpX = logLikelihood(X, phiBar, sample, varianceBar)
+      println("lnP(x) value:" + lnpX)
 
-    } while((lnpX - lnpXcopy) > 0.5)
+    } while((lnpX - lnpCopy) > 80)
 
     (phiBar, sample, varianceBar)
   }
@@ -81,20 +110,11 @@ object Main {
         val variance = varianceBar(k)
         val covariance = Math.sqrt(variance)
 
-        /*
-        println("Mean of K: " + mean)
-        println("Variance of K: " + variance)
-        println("Covariance of K: " + covariance)
-        println("PhiBar of K: " + PhiBar(k))
-         */
-
         val formula = PhiBar(k) * (1 / covariance * Math.sqrt(2 * Math.PI)
           * Math.exp(-(Math.pow(elem - mean, 2) / 2 * variance)))
         rightSideSum = rightSideSum + formula
       }
 
-
-      //println("Ln without sum: " + Math.log(rightSideSum))
       Math.log(rightSideSum)
     }).filter(value => value != Double.NegativeInfinity)
       .reduce((fst, snd) => fst + snd)
@@ -107,10 +127,12 @@ object Main {
   }
 
   // for each n we have k
-  def gamma(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Array[GammaValue] = {
+  def gamma(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double],
+            varianceBar: Array[Double]): Array[GammaValue] = {
 
     // We store our results for each n here. Array buffer is stored since it is mutable data structure.
     var arr: ArrayBuffer[GammaValue] = ArrayBuffer()
+
 
     /*
       Note: First of all, we decided to calculate denominator of expression.
@@ -145,32 +167,38 @@ object Main {
 
         val gammaObj = new GammaValue(datapoint, k, numerator / denominator)
         arr += gammaObj
+
       }
     })
+
     arr.toArray
   }
 
   def mean(X: RDD[Double]): Double = {
     // Mean equals a sum of all values divided on the number of elements
-    X.fold(0)((fst, snd) => fst + snd) / X.count()
+    X.fold(0)((fst, snd) => fst + snd) / xCount
   }
 
   def variance(X: RDD[Double], datasetMean: Double): Double = {
     // Formula => SUM( (x (value from sample) - dataset mean)^2 ) / N (population size)
 
-    val datasetSize = X.count()
+    val datasetSize = xCount
 
-    (X.map(el => Math.pow(el - datasetMean, 2))
-      .reduce((fst, snd) => fst + snd) / datasetSize)
+    X.map(el => Math.pow(el - datasetMean, 2))
+      .reduce((fst, snd) => fst + snd) / datasetSize
   }
 
   def updateWeight(gamma: Array[GammaValue], k: Int, dataPointsNumber: Int): Unit = {
-    phiBar(k) = gamma.filter(el => el.k == k).map(el => el.value / dataPointsNumber).sum
+    phiBar(k) = gamma.filter(el => el.k == k)
+      .map(el => el.value / dataPointsNumber)
+      .sum
   }
 
-  def updateMean(gamma: Array[GammaValue], X: RDD[Double], k: Int, dataPointsNumber: Int): Double = {
+  def updateMean(gamma: Array[GammaValue], k: Int, dataPointsNumber: Int): Double = {
     val denominator = gamma.filter(el => el.k == k).map(el => el.value).sum
-    val num = gamma.filter(el => el.k == k).map(el => el.value * el.n).sum
+    val num = gamma.filter(el => el.k == k)
+      .map(el => el.value * el.n)
+      .sum
 
     sample(k) = num / denominator
     num / denominator
@@ -178,7 +206,13 @@ object Main {
 
   def updateVariance(gamma: Array[GammaValue], k: Int): Unit = {
     val denominator = gamma.filter(el => el.k == k).map(el => el.value).sum
-    val num = gamma.filter(el => el.k == k).map(el => el.value * Math.pow(el.n - sample(k), 2)).sum
+    val num = gamma.filter(el => el.k == k)
+      .map(el => el.value * Math.pow(el.n - sample(k), 2))
+      .sum
     varianceBar(k) = num / denominator
   }
+
+  class GammaValue(var n: Double, var k: Int, var value: Double)
 }
+
+

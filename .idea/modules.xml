@@ -4,6 +4,7 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/BigDataProject.iml" filepath="$PROJECT_DIR$/.idea/modules/BigDataProject.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/BigDataProject-build.iml" filepath="$PROJECT_DIR$/.idea/modules/BigDataProject-build.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/app.iml" filepath="$PROJECT_DIR$/.idea/modules/app.iml" />
     </modules>
   </component>
 </project>
