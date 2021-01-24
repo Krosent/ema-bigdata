@@ -1,9 +1,8 @@
 package com.kuznetsov
 
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{SparkConf}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{SparkSession}
-
 import scala.collection.mutable.ArrayBuffer
 
 object Mn {
@@ -14,35 +13,27 @@ object Mn {
 }
 
 class Main extends App {
-
+  var xCount = 0
   var sample: Array[Double] = _
   var varianceBar: Array[Double] = _
   var phiBar: Array[Double] = _
 
-  var sc: SparkContext = _
-  var spark: SparkSession = _
-
-  var xCount = 0
-
   override def main(args: Array[String]): Unit = {
-
     val conf = new SparkConf()
     conf.setAppName("0561433")
     // remove this line
     conf.setMaster("local[2]")
 
-    spark = SparkSession
+    val spark = SparkSession
       .builder()
       .config(conf)
       .getOrCreate()
 
-    sc = spark.sparkContext
-
+    val sc = spark.sparkContext
 
     // On testing machine
     //val ds: RDD[Double] = sc.textFile("/data/bigDataSecret/dataset-PUT_SET_SIZE.txt", 4)
-      // .map(el => el.toDouble).persist()
-
+    // .map(el => el.toDouble).persist()
 
     for(a <- 1 until 10) {
       // Locally
@@ -59,8 +50,8 @@ class Main extends App {
       val durationSeconds = (endTimeMillis - startTimeMillis) / 1000
 
       println("Execution time: " + durationSeconds)
+      ds.unpersist()
     }
-
   }
 
   type GMM = (Array[Double], Array[Double], Array[Double])
@@ -80,19 +71,21 @@ class Main extends App {
 
     do {
       // Expectation Step
-      val gm: Array[GammaValue] = gamma(X, phiBar, sample, varianceBar)
+      // We store this array in memory because gamma function is used by update functions several times.
+      val gm: RDD[Array[Double]] = gamma(X, phiBar, sample, varianceBar).persist()
 
       // Maximization Step
       for (k <- 0 until K) {
-        updateWeight(gm, k, xCount.toInt)
-        updateMean(gm, k, dataPointsNumber = xCount.toInt)
-        updateVariance(gm, k)
+        updateWeight(gm, k, xCount)
+        updateMean(gm, X, k, dataPointsNumber = xCount)
+        updateVariance(gm, X, k)
       }
 
       lnpCopy = lnpX
       lnpX = logLikelihood(X, phiBar, sample, varianceBar)
       println("lnP(x) value:" + lnpX)
 
+      gm.unpersist()
     } while((lnpX - lnpCopy) > 80)
 
     (phiBar, sample, varianceBar)
@@ -128,12 +121,7 @@ class Main extends App {
 
   // for each n we have k
   def gamma(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double],
-            varianceBar: Array[Double]): Array[GammaValue] = {
-
-    // We store our results for each n here. Array buffer is stored since it is mutable data structure.
-    var arr: ArrayBuffer[GammaValue] = ArrayBuffer()
-
-
+            varianceBar: Array[Double]): RDD[Array[Double]] = {
     /*
       Note: First of all, we decided to calculate denominator of expression.
      */
@@ -156,7 +144,8 @@ class Main extends App {
     // for each datapoint calculate likelihood
     // We have to collect data from RDD into our system, otherwise we cannot populate array which
     // is outside our foreach branch.
-    X.collect().foreach(datapoint => {
+    X.map(datapoint => {
+      var arr: ArrayBuffer[Double] = ArrayBuffer()
       for(k <- sample.indices) {
         val mean = sample(k)
         val variance = varianceBar(k)
@@ -165,13 +154,10 @@ class Main extends App {
         val numerator = PhiBar(k) * (1 / covariance * Math.sqrt(2 * Math.PI)
           * Math.exp(-(Math.pow(datapoint - mean, 2) / 2 * variance)))
 
-        val gammaObj = new GammaValue(datapoint, k, numerator / denominator)
-        arr += gammaObj
-
+        arr += numerator / denominator
       }
+      arr.toArray
     })
-
-    arr.toArray
   }
 
   def mean(X: RDD[Double]): Double = {
@@ -188,31 +174,40 @@ class Main extends App {
       .reduce((fst, snd) => fst + snd) / datasetSize
   }
 
-  def updateWeight(gamma: Array[GammaValue], k: Int, dataPointsNumber: Int): Unit = {
-    phiBar(k) = gamma.filter(el => el.k == k)
-      .map(el => el.value / dataPointsNumber)
-      .sum
+  def updateWeight(gamma: RDD[Array[Double]], k: Int, dataPointsNumber: Int): Unit = {
+    phiBar(k) = gamma.map(row => row(k)).map(row => row / dataPointsNumber).sum()
   }
 
-  def updateMean(gamma: Array[GammaValue], k: Int, dataPointsNumber: Int): Double = {
-    val denominator = gamma.filter(el => el.k == k).map(el => el.value).sum
-    val num = gamma.filter(el => el.k == k)
-      .map(el => el.value * el.n)
-      .sum
+  def updateMean(gamma: RDD[Array[Double]], X: RDD[Double], k: Int, dataPointsNumber: Int): Double = {
+    // Persistence of this value demonstrates worse results than recalculation
+    val zippedRDD = X.zip(gamma)
+
+    val num = zippedRDD.map(elem => {
+      elem._1 * elem._2(k)
+    }).sum()
+
+    val denominator = zippedRDD.map(elem => {
+      elem._2(k)
+    }).sum()
 
     sample(k) = num / denominator
     num / denominator
   }
 
-  def updateVariance(gamma: Array[GammaValue], k: Int): Unit = {
-    val denominator = gamma.filter(el => el.k == k).map(el => el.value).sum
-    val num = gamma.filter(el => el.k == k)
-      .map(el => el.value * Math.pow(el.n - sample(k), 2))
-      .sum
+  def updateVariance(gamma: RDD[Array[Double]], X: RDD[Double], k: Int): Unit = {
+    val zippedRDD = X.zip(gamma)
+    val sampleK = sample(k)
+
+    val num = zippedRDD.map(elem => {
+      elem._2(k) * Math.pow(elem._1 - sampleK, 2)
+    }).sum()
+
+    val denominator = zippedRDD.map(elem => {
+      elem._2(k)
+    }).sum()
+
     varianceBar(k) = num / denominator
   }
-
-  class GammaValue(var n: Double, var k: Int, var value: Double)
 }
 
 
