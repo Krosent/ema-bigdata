@@ -1,44 +1,62 @@
 package com.kuznetsov
 
-import org.apache.spark.{SparkConf}
+import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{SparkSession}
+import org.apache.spark.sql.functions.monotonically_increasing_id
+import org.apache.spark.sql.types.{DoubleType, StructType}
+import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
+
 import scala.collection.mutable.ArrayBuffer
 
 object Mn {
   def main(args: Array[String]): Unit = {
-    val main = new Main()
-    main.main(null)
+    val maximizationApp = new MaximizationApp
+    maximizationApp.startAlgorithm()
   }
 }
 
-class Main extends App {
+class MaximizationApp {
   var xCount = 0
   var sample: Array[Double] = _
   var varianceBar: Array[Double] = _
   var phiBar: Array[Double] = _
 
-  override def main(args: Array[String]): Unit = {
-    val conf = new SparkConf()
-    conf.setAppName("0561433")
-    // remove this line
-    conf.setMaster("local[2]")
+  val conf = new SparkConf()
+  conf.setAppName("0561433")
+  // remove this line (only for local testing)
+  conf.setMaster("local[2]")
 
-    val spark = SparkSession
-      .builder()
-      .config(conf)
-      .getOrCreate()
+  val spark = SparkSession
+    .builder()
+    .config(conf)
+    .getOrCreate()
+  import spark.implicits._
 
+   def startAlgorithm(): Unit = {
     val sc = spark.sparkContext
 
-    // On testing machine
-    //val ds: RDD[Double] = sc.textFile("/data/bigDataSecret/dataset-PUT_SET_SIZE.txt", 4)
-    // .map(el => el.toDouble).persist()
-
-    for(a <- 1 until 10) {
+    // for(a <- 1 until 10) {
       // Locally
-      val ds: RDD[Double] = sc.textFile("dataset-mini.txt")
-        .map(el => el.toDouble).persist()
+//      val ds: RDD[Double] = sc.textFile("dataset-mini.txt")
+       // .map(el => el.toDouble).persist()
+
+     val schema = new StructType()
+       .add("X",DoubleType, false)
+
+     val df: DataFrame = spark
+       .read
+       .option("header", "false")
+       .schema(schema)
+       .csv("dataset-mini.txt")
+
+     val ds = df.as[Double]
+     //val ds: Dataset[Double] = df.select("X")
+
+
+     val kek = 5
+      // On testing machine
+      //val ds: RDD[Double] = sc.textFile("/data/bigDataSecret/dataset-big.txt", 4)
+       //.map(el => el.toDouble).persist()
 
       val startTimeMillis = System.currentTimeMillis()
 
@@ -51,12 +69,12 @@ class Main extends App {
 
       println("Execution time: " + durationSeconds)
       ds.unpersist()
-    }
+    //}
   }
 
   type GMM = (Array[Double], Array[Double], Array[Double])
 
-  def EM(X: RDD[Double], K: Int): GMM = {
+  def EM(X: Dataset[Double], K: Int): GMM = {
     // Initialization Step
     xCount = X.count().toInt
 
@@ -72,12 +90,16 @@ class Main extends App {
     do {
       // Expectation Step
       // We store this array in memory because gamma function is used by update functions several times.
-      val gm: RDD[Array[Double]] = gamma(X, phiBar, sample, varianceBar).persist()
-
+      println("Before gm")
+      val gm: Dataset[Array[Double]] = gamma(X, phiBar, sample, varianceBar).persist()
+      println("After gm")
       // Maximization Step
       for (k <- 0 until K) {
+        println("Update weight")
         updateWeight(gm, k, xCount)
+        println("Update mean")
         updateMean(gm, X, k, dataPointsNumber = xCount)
+        println("After mean update")
         updateVariance(gm, X, k)
       }
 
@@ -85,29 +107,35 @@ class Main extends App {
       lnpX = logLikelihood(X, phiBar, sample, varianceBar)
       println("lnP(x) value:" + lnpX)
 
+      // We clear the persistence because we no longer use the data and we will calculate gamma again on the next iteration
       gm.unpersist()
     } while((lnpX - lnpCopy) > 80)
 
     (phiBar, sample, varianceBar)
   }
 
-  def sampleFunction(X: RDD[Double], K: Int): Array[Double] = {
-    X.takeSample(withReplacement = false, K)
+  def sampleFunction(X: Dataset[Double], K: Int): Array[Double] = {
+    X.take(K)
   }
 
-  def logLikelihood(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Double = {
+  
+  def logLikelihood(X:Dataset[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Double = {
     X.map(elem => {
-      var rightSideSum = 0.0
-      for(k <- sample.indices) {
-        val mean = sample(k)
-        val variance = varianceBar(k)
-        val covariance = Math.sqrt(variance)
+      def calculateRightSumValue: Double = {
+        var rightSideSum = 0.0
+        for (k <- sample.indices) {
+          val mean = sample(k)
+          val variance = varianceBar(k)
+          val covariance = Math.sqrt(variance)
 
-        val formula = PhiBar(k) * (1 / covariance * Math.sqrt(2 * Math.PI)
-          * Math.exp(-(Math.pow(elem - mean, 2) / 2 * variance)))
-        rightSideSum = rightSideSum + formula
+          val formula = PhiBar(k) * (1 / covariance * Math.sqrt(2 * Math.PI)
+            * Math.exp(-(Math.pow(elem - mean, 2) / 2 * variance)))
+          rightSideSum = rightSideSum + formula
+        }
+        rightSideSum
       }
 
+      var rightSideSum: Double = calculateRightSumValue
       Math.log(rightSideSum)
     }).filter(value => value != Double.NegativeInfinity)
       .reduce((fst, snd) => fst + snd)
@@ -120,8 +148,8 @@ class Main extends App {
   }
 
   // for each n we have k
-  def gamma(X:RDD[Double], PhiBar:Array[Double], sample: Array[Double],
-            varianceBar: Array[Double]): RDD[Array[Double]] = {
+  def gamma(X:Dataset[Double], PhiBar:Array[Double], sample: Array[Double],
+            varianceBar: Array[Double]): Dataset[Array[Double]] = {
     /*
       Note: First of all, we decided to calculate denominator of expression.
      */
@@ -160,12 +188,12 @@ class Main extends App {
     })
   }
 
-  def mean(X: RDD[Double]): Double = {
+  def mean(X: Dataset[Double]): Double = {
     // Mean equals a sum of all values divided on the number of elements
-    X.fold(0)((fst, snd) => fst + snd) / xCount
+    X.reduce((fst, snd) => fst + snd) / xCount
   }
 
-  def variance(X: RDD[Double], datasetMean: Double): Double = {
+  def variance(X: Dataset[Double], datasetMean: Double): Double = {
     // Formula => SUM( (x (value from sample) - dataset mean)^2 ) / N (population size)
 
     val datasetSize = xCount
@@ -174,40 +202,46 @@ class Main extends App {
       .reduce((fst, snd) => fst + snd) / datasetSize
   }
 
-  def updateWeight(gamma: RDD[Array[Double]], k: Int, dataPointsNumber: Int): Unit = {
-    phiBar(k) = gamma.map(row => row(k)).map(row => row / dataPointsNumber).sum()
+  def updateWeight(gamma: Dataset[Array[Double]], k: Int, dataPointsNumber: Int): Unit = {
+    phiBar(k) = gamma.map(row => row(k)).map(row => row / dataPointsNumber)
+      .reduce((fst, snd) => fst + snd)
   }
 
-  def updateMean(gamma: RDD[Array[Double]], X: RDD[Double], k: Int, dataPointsNumber: Int): Double = {
-    // Persistence of this value demonstrates worse results than recalculation
-    val zippedRDD = X.zip(gamma)
+  def updateMean(gamma: Dataset[Array[Double]], X: Dataset[Double], k: Int, dataPointsNumber: Int): Double = {
 
-    val num = zippedRDD.map(elem => {
-      elem._1 * elem._2(k)
-    }).sum()
+    X.createOrReplaceTempView("X")
+    gamma.createOrReplaceTempView("Gamma")
 
-    val denominator = zippedRDD.map(elem => {
-      elem._2(k)
-    }).sum()
+    val XandGammaDF: DataFrame = spark.sql("SELECT * FROM X")
+    val Gamma2: DataFrame = spark.sql("SELECT * FROM Gamma")
+
+    val df0 =  X.withColumn("id", monotonically_increasing_id())
+    val df1 = gamma.withColumn("id", monotonically_increasing_id())
+    val resDf = df0.join(df1, "id").drop("id")
+
+    val num: Double = resDf.map(row => row.getDouble(0) + row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
+    val denominator: Double = resDf.map(row => row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
 
     sample(k) = num / denominator
     num / denominator
   }
 
-  def updateVariance(gamma: RDD[Array[Double]], X: RDD[Double], k: Int): Unit = {
-    val zippedRDD = X.zip(gamma)
+  def updateVariance(gamma: Dataset[Array[Double]], X: Dataset[Double], k: Int): Unit = {
+    //val zippedRDD = X.zip(gamma)
     val sampleK = sample(k)
 
-    val num = zippedRDD.map(elem => {
-      elem._2(k) * Math.pow(elem._1 - sampleK, 2)
-    }).sum()
+    val df0 =  X.withColumn("id", monotonically_increasing_id())
+    val df1 = gamma.withColumn("id", monotonically_increasing_id())
+    val resDf = df0.join(df1, "id").drop("id")
 
-    val denominator = zippedRDD.map(elem => {
-      elem._2(k)
-    }).sum()
+    val num = resDf.map (row => {
+      row.getList[Double](1).get(k) * Math.pow(row.getDouble(0) - sampleK, 2)
+    }).reduce((fst, snd) => fst + snd)
+
+    val denominator = resDf.map(row => {
+      row.getList[Double](1).get(k)
+    }).reduce((fst, snd) => fst + snd)
 
     varianceBar(k) = num / denominator
   }
 }
-
-
