@@ -47,7 +47,7 @@ class MaximizationApp {
        .read
        .option("header", "false")
        .schema(schema)
-       .csv("dataset-mini.txt")
+       .csv("dataset-sample.txt")
 
      val ds = df.as[Double]
      //val ds: Dataset[Double] = df.select("X")
@@ -75,6 +75,10 @@ class MaximizationApp {
   type GMM = (Array[Double], Array[Double], Array[Double])
 
   def EM(X: Dataset[Double], K: Int): GMM = {
+    // Statistics variables
+    var numberOfForDoWhileIterations = 0
+
+
     // Initialization Step
     xCount = X.count().toInt
 
@@ -97,10 +101,13 @@ class MaximizationApp {
       for (k <- 0 until K) {
         println("Update weight")
         updateWeight(gm, k, xCount)
+
         println("Update mean")
         updateMean(gm, X, k, dataPointsNumber = xCount)
+
         println("After mean update")
         updateVariance(gm, X, k)
+
       }
 
       lnpCopy = lnpX
@@ -109,7 +116,11 @@ class MaximizationApp {
 
       // We clear the persistence because we no longer use the data and we will calculate gamma again on the next iteration
       gm.unpersist()
+
+      numberOfForDoWhileIterations = numberOfForDoWhileIterations + 1
     } while((lnpX - lnpCopy) > 80)
+
+    println("Number of do iterations is: " + numberOfForDoWhileIterations)
 
     (phiBar, sample, varianceBar)
   }
@@ -216,7 +227,7 @@ class MaximizationApp {
     val df1: DataFrame = gamma.withColumn("id", monotonically_increasing_id())
     val resDf: DataFrame = df0.join(df1, "id").drop("id")
 
-    val num: Double = resDf.map(row => row.getDouble(0) + row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
+    val num: Double = resDf.map(row => row.getDouble(0) * row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
     val denominator: Double = resDf.map(row => row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
 
     sample(k) = num / denominator
