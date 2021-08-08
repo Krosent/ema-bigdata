@@ -26,7 +26,7 @@ class MaximizationApp {
   // remove this line (only for local testing)
   conf.setMaster("local[2]")
 
-  val spark = SparkSession
+  val spark: SparkSession = SparkSession
     .builder()
     .config(conf)
     .getOrCreate()
@@ -41,7 +41,7 @@ class MaximizationApp {
        // .map(el => el.toDouble).persist()
 
      val schema = new StructType()
-       .add("X",DoubleType, false)
+       .add("X",DoubleType, nullable = false)
 
      val df: DataFrame = spark
        .read
@@ -118,7 +118,7 @@ class MaximizationApp {
     X.take(K)
   }
 
-  
+
   def logLikelihood(X:Dataset[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Double = {
     X.map(elem => {
       def calculateRightSumValue: Double = {
@@ -212,12 +212,9 @@ class MaximizationApp {
     X.createOrReplaceTempView("X")
     gamma.createOrReplaceTempView("Gamma")
 
-    val XandGammaDF: DataFrame = spark.sql("SELECT * FROM X")
-    val Gamma2: DataFrame = spark.sql("SELECT * FROM Gamma")
-
-    val df0 =  X.withColumn("id", monotonically_increasing_id())
-    val df1 = gamma.withColumn("id", monotonically_increasing_id())
-    val resDf = df0.join(df1, "id").drop("id")
+    val df0: DataFrame =  X.withColumn("id", monotonically_increasing_id())
+    val df1: DataFrame = gamma.withColumn("id", monotonically_increasing_id())
+    val resDf: DataFrame = df0.join(df1, "id").drop("id")
 
     val num: Double = resDf.map(row => row.getDouble(0) + row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
     val denominator: Double = resDf.map(row => row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
@@ -227,7 +224,6 @@ class MaximizationApp {
   }
 
   def updateVariance(gamma: Dataset[Array[Double]], X: Dataset[Double], k: Int): Unit = {
-    //val zippedRDD = X.zip(gamma)
     val sampleK = sample(k)
 
     val df0 =  X.withColumn("id", monotonically_increasing_id())
