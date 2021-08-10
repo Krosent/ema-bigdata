@@ -24,7 +24,7 @@ class MaximizationApp {
   val conf = new SparkConf()
   conf.setAppName("0561433")
   // remove this line (only for local testing)
-  conf.setMaster("local[2]")
+  conf.setMaster("local[4]")
 
   val spark: SparkSession = SparkSession
     .builder()
@@ -47,15 +47,10 @@ class MaximizationApp {
        .read
        .option("header", "false")
        .schema(schema)
-       .csv("dataset-sample.txt")
+       .csv("dataset-mini.txt")
 
      val ds = df.as[Double]
-     //val ds: Dataset[Double] = df.select("X")
 
-
-
-
-     val kek = 5
       // On testing machine
       //val ds: RDD[Double] = sc.textFile("/data/bigDataSecret/dataset-big.txt", 4)
        //.map(el => el.toDouble).persist()
@@ -94,6 +89,7 @@ class MaximizationApp {
     var lnpCopy: Double = lnpX
 
     do {
+      var startTimeStepEM = System.currentTimeMillis()
       // Expectation Step
       // We store this array in memory because gamma function is used by update functions several times.
       println("Before gm")
@@ -107,9 +103,14 @@ class MaximizationApp {
         println("Update mean")
         updateMean(gm, X, k, dataPointsNumber = xCount)
 
-        println("After mean update")
+        println("Update variance")
         updateVariance(gm, X, k)
 
+//        println("Update mean and variance")
+//        updateMeanAndVariance(gm, X, K, dataPointsNumber = 4)
+
+        var endTimeStepEM = System.currentTimeMillis()
+        println("EM Step execution time: " + (endTimeStepEM - startTimeStepEM))
       }
 
       lnpCopy = lnpX
@@ -133,7 +134,9 @@ class MaximizationApp {
 
 
   def logLikelihood(X:Dataset[Double], PhiBar:Array[Double], sample: Array[Double], varianceBar: Array[Double]): Double = {
-    X.map(elem => {
+    val startTimeLogLikelihood = System.currentTimeMillis()
+
+    val res = X.map(elem => {
       def calculateRightSumValue: Double = {
         var rightSideSum = 0.0
         for (k <- sample.indices) {
@@ -158,6 +161,11 @@ class MaximizationApp {
         Our values represented as Double. We replaced it from Float, to have better precision, however it does not solve
         the issue with non-negative values.
      */
+
+    val endTimeLogLikelihood = System.currentTimeMillis()
+    println("Likelihood function execution time: " + (endTimeLogLikelihood - startTimeLogLikelihood))
+
+    res
   }
 
   // for each n we have k
@@ -221,9 +229,7 @@ class MaximizationApp {
   }
 
   def updateMean(gamma: Dataset[Array[Double]], X: Dataset[Double], k: Int, dataPointsNumber: Int): Double = {
-
-    X.createOrReplaceTempView("X")
-    gamma.createOrReplaceTempView("Gamma")
+    val startTimeUpdateMean = System.currentTimeMillis()
 
     val df0: DataFrame =  X.withColumn("id", monotonically_increasing_id())
     val df1: DataFrame = gamma.withColumn("id", monotonically_increasing_id())
@@ -232,13 +238,16 @@ class MaximizationApp {
     val num: Double = resDf.map(row => row.getDouble(0) * row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
     val denominator: Double = resDf.map(row => row.getList[Double](1).get(k)).reduce((fst, snd) => fst + snd)
 
+    val endTimeUpdateMean = System.currentTimeMillis()
+    println("Update mean execution time: " + (endTimeUpdateMean - startTimeUpdateMean))
+
     sample(k) = num / denominator
     num / denominator
   }
 
   def updateVariance(gamma: Dataset[Array[Double]], X: Dataset[Double], k: Int): Unit = {
+    val startTimeUpdateVariance = System.currentTimeMillis()
     val sampleK = sample(k)
-
     val df0 =  X.withColumn("id", monotonically_increasing_id())
     val df1 = gamma.withColumn("id", monotonically_increasing_id())
     val resDf = df0.join(df1, "id").drop("id")
@@ -250,6 +259,10 @@ class MaximizationApp {
     val denominator = resDf.map(row => {
       row.getList[Double](1).get(k)
     }).reduce((fst, snd) => fst + snd)
+
+
+    val endTimeUpdateVariance = System.currentTimeMillis()
+    println("Update variance execution time: " + (endTimeUpdateVariance - startTimeUpdateVariance))
 
     varianceBar(k) = num / denominator
   }
