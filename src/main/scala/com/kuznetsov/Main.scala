@@ -53,6 +53,8 @@ class MaximizationApp {
      //val ds: Dataset[Double] = df.select("X")
 
 
+
+
      val kek = 5
       // On testing machine
       //val ds: RDD[Double] = sc.textFile("/data/bigDataSecret/dataset-big.txt", 4)
