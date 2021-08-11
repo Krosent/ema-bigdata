@@ -24,7 +24,7 @@ class MaximizationApp {
   val conf = new SparkConf()
   conf.setAppName("0561433")
   // remove this line (only for local testing)
-  conf.setMaster("local[4]")
+  //conf.setMaster("local[4]")
 
   val spark: SparkSession = SparkSession
     .builder()
@@ -47,7 +47,7 @@ class MaximizationApp {
        .read
        .option("header", "false")
        .schema(schema)
-       .csv("dataset-mini.txt")
+       .csv("dataset-medium.txt")
 
      val ds = df.as[Double]
 
@@ -58,6 +58,7 @@ class MaximizationApp {
       val startTimeMillis = System.currentTimeMillis()
 
       val em = EM(ds, 3)
+
       println("EM: " + em._1.mkString("Array(", ", ", ")") + " | " + em._2.mkString("Array(", ", ", ")")
         + " | " + em._3.mkString("Array(", ", ", ")"))
 
@@ -72,6 +73,10 @@ class MaximizationApp {
   type GMM = (Array[Double], Array[Double], Array[Double])
 
   def EM(X: Dataset[Double], K: Int): GMM = {
+
+    // repartitioning
+    X.repartition(32)
+
     // Statistics variables
     var numberOfForDoWhileIterations = 0
 
